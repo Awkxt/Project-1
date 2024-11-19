@@ -1,0 +1,286 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from torchvision import transforms, datasets
+from torch.utils.data import DataLoader, Dataset
+from PIL import Image
+import pandas as pd
+import os
+
+# Device setup
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class ResidualBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, stride=1, downsample=None, dropout_rate=0.2):
+        super(ResidualBlock, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        self.downsample = downsample
+        self.dropout = nn.Dropout2d(p=dropout_rate)  # Spatial dropout for convolutional layers
+
+    def forward(self, x):
+        residual = x
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out = self.dropout(out)  # Apply dropout
+
+        if self.downsample:
+            residual = self.downsample(x)
+        out += residual
+        return F.relu(out)
+class DogHeartCNN(nn.Module):
+    def __init__(self, num_classes=3, dropout_rate=0.4):
+        super(DogHeartCNN, self).__init__()
+        # Initial Convolutional Layer
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.pool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+
+        # Residual Blocks
+        self.layer1 = self._make_layer(64, 64, 3, stride=1, dropout_rate=0.2)
+        self.layer2 = self._make_layer(64, 128, 3, stride=2, dropout_rate=0.3)
+        self.layer3 = self._make_layer(128, 256, 3, stride=2, dropout_rate=0.3)
+        self.layer4 = self._make_layer(256, 512, 3, stride=2, dropout_rate=0.4)
+
+        # Adaptive Average Pooling and Fully Connected Layer
+        self.avg_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.dropout = nn.Dropout(p=dropout_rate)
+        self.fc = nn.Linear(512, num_classes)
+
+    def _make_layer(self, in_channels, out_channels, blocks, stride, dropout_rate):
+        downsample = None
+        if stride != 1 or in_channels != out_channels:
+            downsample = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride),
+                nn.BatchNorm2d(out_channels),
+            )
+        layers = [ResidualBlock(in_channels, out_channels, stride, downsample, dropout_rate)]
+        for _ in range(1, blocks):
+            layers.append(ResidualBlock(out_channels, out_channels, dropout_rate=dropout_rate))
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        # Initial Convolutional Layer
+        x = F.relu(self.bn1(self.conv1(x)))
+        x = self.pool(x)
+
+        # Residual Layers
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+
+        # Adaptive Average Pooling
+        x = self.avg_pool(x)
+        x = torch.flatten(x, 1)
+        x = self.dropout(x)
+
+        # Fully Connected Layer
+        x = self.fc(x)
+        return x
+
+# Initialize the model
+model = DogHeartCNN(num_classes=3).to('cuda' if torch.cuda.is_available() else 'cpu')
+print(model)
+
+class TestDataset(Dataset):
+    def __init__(self, root_dir, transform=None):
+        self.root_dir = root_dir
+        # Collect image filenames in the directory
+        self.image_files = [f for f in os.listdir(root_dir) if f.endswith(('.png', '.jpg', '.jpeg'))]
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.image_files)
+
+    def __getitem__(self, idx):
+        img_path = os.path.join(self.root_dir, self.image_files[idx])
+        # Load the image
+        image = Image.open(img_path).convert('RGB')
+        # Apply transformations (e.g., resizing, normalization)
+        if self.transform:
+            image = self.transform(image)
+        return image, self.image_files[idx]
+
+from google.colab import drive
+import os
+
+# Mount Google Drive
+drive.mount('/content/drive')
+
+# Define data directories
+data_dir = '/content/drive/My Drive/'
+train_dir = os.path.join(data_dir, 'Train')
+valid_dir = os.path.join(data_dir, 'Valid')
+test_dir = os.path.join(data_dir, 'Test')
+
+# Training Transformations
+transform_train = transforms.Compose([
+    transforms.Resize((224, 224)),  # Resize to 75x75
+    transforms.RandomHorizontalFlip(p=0.5),  # Random horizontal flip
+    transforms.RandomRotation(10),  # Random rotation
+    transforms.ToTensor(),  # Convert to PyTorch tensor
+    transforms.Normalize(mean=[0.4926, 0.4927, 0.4926], std=[0.2077, 0.2076, 0.2077])  # Normalize
+])
+
+# Test Transformations
+transform_test = transforms.Compose([
+    transforms.Resize((224, 224)),  # Resize to 75x75
+    transforms.ToTensor(),  # Convert to PyTorch tensor
+    transforms.Normalize(mean=[0.4926, 0.4927, 0.4926], std=[0.2077, 0.2076, 0.2077])  # Normalize
+])
+
+
+# Load datasets
+train_data = datasets.ImageFolder('/content/drive/My Drive/Train', transform=transform_train)
+val_data = datasets.ImageFolder('/content/drive/My Drive/Valid', transform=transform_test)
+test_data = TestDataset('/content/drive/My Drive/Test', transform=transform_test)
+
+train_loader = DataLoader(train_data, batch_size=16, shuffle=True)
+val_loader = DataLoader(val_data, batch_size=16, shuffle=False)
+test_loader = DataLoader(test_data, batch_size=16, shuffle=False)
+
+from torchvision import transforms
+
+# Training transformations
+transform_train = transforms.Compose([
+    transforms.Resize((112, 112)),
+    transforms.RandomHorizontalFlip(p=0.5),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
+
+# Validation and Test transformations
+transform_test = transforms.Compose([
+    transforms.Resize((112, 112)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
+
+
+import torch.optim as optim
+
+# Loss function
+criterion = nn.CrossEntropyLoss()
+
+# Optimizer: AdamW for better generalization
+optimizer = optim.AdamW(model.parameters(), lr=0.0001, weight_decay=1e-3)
+
+# Scheduler: StepLR with step size of 10 epochs and gamma of 0.1
+scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+
+def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, epochs=50, patience=10):
+    best_val_accuracy = 0
+    patience_counter = 0
+
+    print("Starting training with StepLR scheduler...")
+
+    for epoch in range(epochs):
+        # Training phase
+        model.train()
+        running_loss = 0.0
+        for inputs, labels in train_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item()
+
+        avg_loss = running_loss / len(train_loader)
+
+        # Validation phase
+        model.eval()
+        correct, total = 0, 0
+        with torch.no_grad():
+            for inputs, labels in val_loader:
+                inputs, labels = inputs.to(device), labels.to(device)
+                outputs = model(inputs)
+                _, predicted = torch.max(outputs, 1)
+                total += labels.size(0)
+                correct += (predicted == labels).sum().item()
+
+        val_accuracy = 100 * correct / total
+
+        # Print loss and validation accuracy
+        print(f"Epoch [{epoch+1}/{epochs}] - Loss: {avg_loss:.4f} - Validation Accuracy: {val_accuracy:.2f}%")
+
+        # Scheduler step
+        scheduler.step()
+
+        # Save best model
+        if val_accuracy > best_val_accuracy:
+            best_val_accuracy = val_accuracy
+            patience_counter = 0
+            torch.save(model.state_dict(), "best_model.pth")
+            print("Best model saved!")
+        else:
+            patience_counter += 1
+
+        # Early stopping
+        #if patience_counter >= patience:
+            #print("Early stopping triggered.")
+            #break
+
+    print("Training completed.")
+
+# Train the model
+train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, epochs=50, patience=20)
+
+
+import os
+import pandas as pd
+
+def generate_predictions(model, test_loader):
+    model.eval()
+    predictions = []
+    with torch.no_grad():
+        for images, filenames in test_loader:
+            images = images.to(device)
+            outputs = model(images)
+            _, predicted = torch.max(outputs, 1)
+            for i in range(len(filenames)):
+                predictions.append((filenames[i], predicted[i].item()))
+    return predictions
+
+# Generate and save predictions
+predictions = generate_predictions(model, test_loader)
+
+# Save the file to the user's home folder
+output_file = os.path.expanduser('~/test_predictions.csv')  # Saves in the user's home directory
+pd.DataFrame(predictions, columns=["Filename", "Predicted Class"]).to_csv(output_file, index=False, header=False)
+print(f"Predictions saved to {output_file}")
+
+
+import os
+import pandas as pd
+import torch
+
+def generate_predictions(model, test_loader):
+    model.eval()
+    predictions = []
+    with torch.no_grad():
+        for images, filenames in test_loader:
+            images = images.to(device)
+            outputs = model(images)
+            _, predicted = torch.max(outputs, 1)
+            for i in range(len(filenames)):
+                predictions.append((filenames[i], predicted[i].item()))
+    return predictions
+
+# Generate and save predictions
+predictions = generate_predictions(model, test_loader)
+
+# Save the file to the Colab's root directory
+output_file = '/content/test_predictions.csv'  # Path for Colab root directory
+pd.DataFrame(predictions, columns=["Filename", "Predicted Class"]).to_csv(output_file, index=False, header=False)
+print(f"Predictions saved to {output_file}")
